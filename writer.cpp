@@ -1,80 +1,94 @@
 #include "consts.hpp"
 #include <ctime>
-//дескриптор устройства стандартного вывода
-HANDLE handleStdOut;
+#include <windows.h>
+#include <string>
+#include <iostream>
 
-void LogWrite(const string& data){
+// Function to write log messages
+void LogWrite(const std::string& message) {
     WriteFile(
-            handleStdOut,
-            data.c_str(),
-            data.length(),
+            GetStdHandle(STD_OUTPUT_HANDLE),
+            message.c_str(),
+            message.length(),
             nullptr,
             nullptr);
 }
 
-int main(){
+// Function to open a semaphore with error handling
+HANDLE OpenSemaphoreWithErrorCheck(DWORD accessMode, BOOL inheritHandle, const std::string& semaphoreName) {
+    HANDLE semaphore = OpenSemaphore(accessMode, inheritHandle, semaphoreName.c_str());
+    if (semaphore == nullptr) {
+        std::cerr << "Error opening semaphore: " << semaphoreName << std::endl;
+        ExitProcess(1);
+    }
+    return semaphore;
+}
+
+int main() {
     srand(time(nullptr));
 
-    HANDLE writeSemaphores[pageCount],
-        readSemaphores[pageCount],
-        IOMutex = OpenMutex(
-                MUTEX_MODIFY_STATE | SYNCHRONIZE,
-                false,
-                mutexName.c_str()),
-        mapFile = OpenFileMapping(
-                GENERIC_READ,
-                false,
-                mapName.c_str());
-    handleStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD page = 0;
+    // Open handles to semaphores and mutex
+    HANDLE writeSemaphores[pageCount], readSemaphores[pageCount];
+    HANDLE ioMutex = OpenMutex(
+            MUTEX_MODIFY_STATE | SYNCHRONIZE,
+            false,
+            mutexName.c_str());
+    HANDLE mappedFile = OpenFileMapping(
+            GENERIC_READ,
+            false,
+            mapName.c_str());
 
-    for (int i = 0; i < pageCount; i++){
-        string semaphoreName = "writeSemaphore #" + to_string(i);
-        writeSemaphores[i] = OpenSemaphore(
-                SEMAPHORE_MODIFY_STATE | SYNCHRONIZE,
-                FALSE,
-                semaphoreName.c_str());
-        semaphoreName = "readSemaphore #" + to_string(i);
-        readSemaphores[i] = OpenSemaphore(
-                SEMAPHORE_MODIFY_STATE | SYNCHRONIZE,
-                FALSE,
-                semaphoreName.c_str());
+    // Open handles to standard output and semaphores
+    HANDLE stdOutHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    for (int i = 0; i < pageCount; i++) {
+        std::string writeSemaphoreName = "writeSemaphore #" + std::to_string(i);
+        writeSemaphores[i] = OpenSemaphoreWithErrorCheck(SEMAPHORE_MODIFY_STATE | SYNCHRONIZE,
+                                                         FALSE,
+                                                         writeSemaphoreName);
+
+        std::string readSemaphoreName = "readSemaphore #" + std::to_string(i);
+        readSemaphores[i] = OpenSemaphoreWithErrorCheck(SEMAPHORE_MODIFY_STATE | SYNCHRONIZE,
+                                                        FALSE,
+                                                        readSemaphoreName);
     }
 
-    for (int i = 0; i < 3; i++){
-        LogWrite("Wait | Semaphore | " + to_string(GetTickCount()) + "\n");
+    // Perform write operations
+    for (int i = 0; i < 3; i++) {
+        LogWrite("Wait | Semaphore | " + std::to_string(GetTickCount()) + "\n");
 
-        //ожидание любой свободной страницы
-        page = WaitForMultipleObjects(
+        // Wait for any available page
+        DWORD page = WaitForMultipleObjects(
                 pageCount,
                 writeSemaphores,
                 FALSE,
                 INFINITE);
-        LogWrite("Take | Semaphore | " + to_string(GetTickCount()) + "\n");
+        LogWrite("Take | Semaphore | " + std::to_string(GetTickCount()) + "\n");
 
-        //Wait - функция используется для захвата мьютекса
+        // Wait for the I/O mutex
         WaitForSingleObject(
-                IOMutex,
+                ioMutex,
                 INFINITE);
-        LogWrite("Take | Mutex | " + to_string(GetTickCount()) + "\n");
+        LogWrite("Take | Mutex | " + std::to_string(GetTickCount()) + "\n");
 
         Sleep(500 + rand() % 1000);
-        LogWrite("Write | Page: " + to_string(page) + " | " + to_string(GetTickCount()) + "\n");
+        LogWrite("Write | Page: " + std::to_string(page) + " | " + std::to_string(GetTickCount()) + "\n");
 
-        //Освобождение мьютекса
-        ReleaseMutex(IOMutex);
-        LogWrite("Free | Mutex | " + to_string(GetTickCount()) + "\n");
+        // Release the I/O mutex
+        ReleaseMutex(ioMutex);
+        LogWrite("Free | Mutex | " + std::to_string(GetTickCount()) + "\n");
 
-        //Освобождение семафора
+        // Release the read semaphore for the written page
         ReleaseSemaphore(readSemaphores[page], 1, nullptr);
-        LogWrite("Free | Semaphore | " + to_string(GetTickCount()) + "\n\n");
+        LogWrite("Free | Semaphore | " + std::to_string(GetTickCount()) + "\n\n");
     }
 
-    for (int i = 0; i < pageCount; i++){
+    // Close handles
+    for (int i = 0; i < pageCount; i++) {
         CloseHandle(writeSemaphores[i]);
         CloseHandle(readSemaphores[i]);
     }
-    CloseHandle(IOMutex);
-	CloseHandle(mapFile);
-	CloseHandle(handleStdOut);
+    CloseHandle(ioMutex);
+    CloseHandle(mappedFile);
+
+    return 0;
 }
